@@ -1,0 +1,66 @@
+name: Build m1q (S26) KernelSU LKM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-m1q-ko:
+    name: Build m1q kernelsu.ko (Samsung KDP/RKP/DEFEX)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android16-6.12-20260313
+      options: --privileged
+
+    steps:
+      - name: Checkout KernelSU source (with m1q adaptation)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Build kernelsu.ko for m1q android16-6.12
+        env:
+          TARGET_RELEASE: 6.12.30-android16-5-pd30ff70-abogkiS942USQS4AZG3-4k
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory /__w/KernelSU/KernelSU 2>/dev/null || true
+          cd kernel
+
+          # KDIR is provided by the ddk-min container environment.
+          echo "KDIR=$KDIR"
+          ls "$KDIR/include/generated/utsrelease.h" "$KDIR/include/config/kernel.release"
+
+          # Override DDK release string with exact m1q release (CONFIG_MODULE_FORCE_LOAD=n).
+          for f in "$KDIR/include/generated/utsrelease.h" "$KDIR/include/config/kernel.release"; do
+            if [ -f "$f" ]; then
+              sed -i "s/6\.12\.[0-9]*-android16-[0-9]*-[^ \"]*/${TARGET_RELEASE}/g" "$f"
+              echo "--- patched $f ---"; cat "$f"
+            fi
+          done
+
+          # Build with all three Samsung compat toggles.
+          make clean || true
+          CONFIG_KSU=m \
+          CONFIG_KSU_SAMSUNG_KDP=y \
+          CONFIG_KSU_SAMSUNG_RKP=y \
+          CONFIG_KSU_SAMSUNG_DEFEX=y \
+          CC=clang \
+            make -j"$(nproc)"
+
+          ls -l kernelsu.ko
+
+          # Manual relocation: strip debug but keep .symtab/.strtab, empty __versions.
+          llvm-strip -d kernelsu.ko || true
+
+          modinfo kernelsu.ko | grep vermagic || true
+
+          mkdir -p /github/workspace/out
+          cp kernelsu.ko /github/workspace/out/android16-6.12_kernelsu-m1q-kdp.ko
+          echo "=== output ==="
+          ls -l /github/workspace/out/
+
+      - name: Upload m1q kernelsu.ko
+        uses: actions/upload-artifact@v7
+        with:
+          name: android16-6.12_kernelsu-m1q-kdp
+          path: out/android16-6.12_kernelsu-m1q-kdp.ko
+          if-no-files-found: error
